@@ -1,0 +1,18 @@
+diff --git a/src/grd-rdp-audio-output-stream.c b/src/grd-rdp-audio-output-stream.c
+index 0000000..1111111 100644
+--- a/src/grd-rdp-audio-output-stream.c
++++ b/src/grd-rdp-audio-output-stream.c
+@@ -1,6 +1,27 @@
+ void
+ grd_rdp_audio_output_stream_set_active (GrdRdpAudioOutputStream *audio_output_stream,
+                                         gboolean                 active)
+ {
+-  pw_stream_set_active (audio_output_stream->pipewire_stream, active);
++  /* Defer activation into a safe main-loop context to avoid wrong-context calls. */
++  SetActiveData *data = g_new0 (SetActiveData, 1);
++  data->stream = g_object_ref (audio_output_stream);
++  data->active = active;
++  g_idle_add (set_active_idle_cb, data);
+ }
+
+/* Note: this patch is intentionally minimal and serves as reference material for upstream discussion. */
