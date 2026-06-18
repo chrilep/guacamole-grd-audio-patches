@@ -1,0 +1,107 @@
+FROM alpine:edge AS builder
+
+RUN apk add --no-cache \
+    build-base cmake git autoconf automake libtool pkgconf \
+    cairo-dev libjpeg-turbo-dev libpng-dev \
+    freerdp-dev \
+    pango-dev \
+    libssh2-dev \
+    libvncserver-dev \
+    libwebsockets-dev \
+    pulseaudio-dev \
+    openssl-dev \
+    libwebp-dev \
+    ffmpeg-dev \
+    util-linux-dev \
+    libvorbis-dev libogg-dev opus-dev
+
+RUN git clone --depth 1 https://github.com/seanmiddleditch/libtelnet.git /build/libtelnet && \
+    cd /build/libtelnet && \
+    cmake -B build -DCMAKE_INSTALL_PREFIX=/usr && \
+    cmake --build build && \
+    cp build/liblibtelnet.a /usr/lib/libtelnet.a && \
+    cp libtelnet.h /usr/include/
+
+RUN git clone --depth 1 https://github.com/apache/guacamole-server.git /build/guacamole-server
+
+RUN cd /build/guacamole-server/src/protocols/rdp && \
+    sed -i '/settings->width = user->info.optimal_width/{N;N;s|settings->width = user->info.optimal_width\n *\* settings->resolution\n *\/ user->info.optimal_resolution;|settings->width = (user->info.optimal_resolution > 0) ? (user->info.optimal_width * settings->resolution / user->info.optimal_resolution) : 1024;|}' settings.c && \
+    sed -i '/settings->height = user->info.optimal_height/{N;N;s|settings->height = user->info.optimal_height\n *\* settings->resolution\n *\/ user->info.optimal_resolution;|settings->height = (user->info.optimal_resolution > 0) ? (user->info.optimal_height * settings->resolution / user->info.optimal_resolution) : 768;|}' settings.c
+
+RUN sed -i 's/Stream_Write_UINT16(output_stream, 6);/Stream_Write_UINT16(output_stream, 8);/' \
+    /build/guacamole-server/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c
+
+RUN MSGS=/build/guacamole-server/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c && \
+    SND=/build/guacamole-server/src/protocols/rdp/channels/rdpsnd/rdpsnd.c && \
+    MSGH=/build/guacamole-server/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.h && \
+    sed -i '/void guac_rdpsnd_close_handler/i \void guac_rdpsnd_wave2_handler(guac_rdp_common_svc* svc,\n        wStream* input_stream, guac_rdpsnd_pdu_header* header);' "$MSGH" && \
+    printf '\nvoid guac_rdpsnd_wave2_handler(guac_rdp_common_svc* svc,\n' >> "$MSGS" && \
+    printf '        wStream* input_stream, guac_rdpsnd_pdu_header* header) {\n' >> "$MSGS" && \
+    printf '    guac_client* client = svc->client;\n' >> "$MSGS" && \
+    printf '    guac_rdpsnd* rdpsnd = (guac_rdpsnd*) svc->data;\n' >> "$MSGS" && \
+    printf '    guac_rdp_client* rdp_client = (guac_rdp_client*) client->data;\n' >> "$MSGS" && \
+    printf '    guac_audio_stream* audio = rdp_client->audio;\n' >> "$MSGS" && \
+    printf '    int format;\n    int block_number;\n' >> "$MSGS" && \
+    printf '    if (Stream_GetRemainingLength(input_stream) < 12) {\n' >> "$MSGS" && \
+    printf '        guac_client_log(client, GUAC_LOG_WARNING, "Wave2 PDU too short");\n' >> "$MSGS" && \
+    printf '        return;\n    }\n' >> "$MSGS" && \
+    printf '    Stream_Read_UINT16(input_stream, rdpsnd->server_timestamp);\n' >> "$MSGS" && \
+    printf '    Stream_Read_UINT16(input_stream, format);\n' >> "$MSGS" && \
+    printf '    Stream_Read_UINT8(input_stream, block_number);\n' >> "$MSGS" && \
+    printf '    Stream_Seek(input_stream, 3);\n' >> "$MSGS" && \
+    printf '    Stream_Seek(input_stream, 4);\n' >> "$MSGS" && \
+    printf '    int wave_size = header->body_size - 12;\n' >> "$MSGS" && \
+    printf '    if (wave_size <= 0 || Stream_GetRemainingLength(input_stream) < (size_t)wave_size) {\n' >> "$MSGS" && \
+    printf '        guac_client_log(client, GUAC_LOG_WARNING, "Wave2 PDU invalid size");\n' >> "$MSGS" && \
+    printf '        return;\n    }\n' >> "$MSGS" && \
+    printf '    if (audio != NULL) {\n' >> "$MSGS" && \
+    printf '        if (format < GUAC_RDP_MAX_FORMATS)\n' >> "$MSGS" && \
+    printf '            guac_audio_stream_reset(audio, NULL,\n' >> "$MSGS" && \
+    printf '                    rdpsnd->formats[format].rate,\n' >> "$MSGS" && \
+    printf '                    rdpsnd->formats[format].channels,\n' >> "$MSGS" && \
+    printf '                    rdpsnd->formats[format].bps);\n' >> "$MSGS" && \
+    printf '        guac_audio_stream_write_pcm(audio, Stream_Pointer(input_stream), wave_size);\n' >> "$MSGS" && \
+    printf '        guac_audio_stream_flush(audio);\n' >> "$MSGS" && \
+    printf '    }\n' >> "$MSGS" && \
+    printf '    wStream* output_stream = Stream_New(NULL, 8);\n' >> "$MSGS" && \
+    printf '    Stream_Write_UINT8(output_stream, 0x05);\n' >> "$MSGS" && \
+    printf '    Stream_Write_UINT8(output_stream, 0);\n' >> "$MSGS" && \
+    printf '    Stream_Write_UINT16(output_stream, 4);\n' >> "$MSGS" && \
+    printf '    Stream_Write_UINT16(output_stream, rdpsnd->server_timestamp);\n' >> "$MSGS" && \
+    printf '    Stream_Write_UINT8(output_stream, block_number);\n' >> "$MSGS" && \
+    printf '    Stream_Write_UINT8(output_stream, 0);\n' >> "$MSGS" && \
+    printf '    guac_rdp_common_svc_write(svc, output_stream);\n' >> "$MSGS" && \
+    printf '}\n' >> "$MSGS" && \
+    sed -i '/case SNDC_CLOSE:/i \        case 0x0D:\n            guac_rdpsnd_wave2_handler(svc, input_stream, \&header);\n            break;' "$SND"
+
+WORKDIR /build/guacamole-server
+RUN autoreconf -fi && \
+    ./configure --prefix=/opt/guacamole \
+      --with-freerdp-plugin-dir=/usr/lib/freerdp3 \
+      --disable-guacenc \
+      CFLAGS="-Wno-error=deprecated-declarations" && \
+    make -j$(nproc) && \
+    make install
+
+FROM alpine:edge
+
+RUN apk add --no-cache \
+    cairo libjpeg-turbo libpng \
+    freerdp-libs \
+    pango \
+    libssh2 \
+    libvncserver \
+    libwebsockets \
+    pulseaudio \
+    openssl \
+    libwebp \
+    ffmpeg-libs \
+    util-linux \
+    libvorbis libogg opus
+
+COPY --from=builder /opt/guacamole /opt/guacamole
+COPY --from=builder /usr/lib/freerdp3 /usr/lib/freerdp3
+
+ENV LD_LIBRARY_PATH=/opt/guacamole/lib
+EXPOSE 4822
+CMD ["/opt/guacamole/sbin/guacd", "-b", "0.0.0.0", "-L", "info", "-f"]
