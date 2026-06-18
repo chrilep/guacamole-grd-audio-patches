@@ -1,0 +1,9 @@
+diff --git a/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c b/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c
+index 0000000..1111111 100644
+--- a/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c
++++ b/src/protocols/rdp/channels/rdpsnd/rdpsnd-messages.c
+@@ -1,3 +1,3 @@
+-Stream_Write_UINT16(output_stream, 6);
++Stream_Write_UINT16(output_stream, 8);
+
+/* Note: minimal single-change patch representation for upstream PR context. */
